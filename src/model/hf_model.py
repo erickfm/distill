@@ -58,6 +58,20 @@ class HFModel(nn.Module):
         self.model_name = model_name
 
     # ------------------------------------------------------------------ #
+    # Gradient checkpointing                                               #
+    # ------------------------------------------------------------------ #
+
+    def enable_gradient_checkpointing(self) -> None:
+        """Enable gradient checkpointing to trade compute for memory."""
+        self.model.gradient_checkpointing_enable(
+            gradient_checkpointing_kwargs={"use_reentrant": False}
+        )
+
+    def disable_gradient_checkpointing(self) -> None:
+        """Disable gradient checkpointing."""
+        self.model.gradient_checkpointing_disable()
+
+    # ------------------------------------------------------------------ #
     # Forward / log-prob computation                                      #
     # ------------------------------------------------------------------ #
 

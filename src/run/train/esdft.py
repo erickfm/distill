@@ -93,6 +93,10 @@ def _compute_disagreement(
         # Per-example mean KL
         disagreement = kl_per_token.sum(dim=-1) / mask.sum(dim=-1).clamp(min=1)
 
+    # Free intermediate tensors from screening forward passes
+    del s_out, t_out, s_log_probs, t_log_probs, s_probs, kl_per_token
+    torch.cuda.empty_cache()
+
     return disagreement  # (B,)
 
 
@@ -146,6 +150,9 @@ def _esdft_generation_step(
             do_sample=True,
         )
 
+    # Free generation KV cache before heavy forward passes
+    torch.cuda.empty_cache()
+
     gen_attention_mask = torch.ones_like(generated)
 
     # --- Step 2: Student logits on the rollout ---
@@ -173,6 +180,8 @@ def _esdft_generation_step(
             attention_mask=teacher_full_mask,
         )
     teacher_logits = teacher_outputs.logits
+    del teacher_outputs
+    torch.cuda.empty_cache()
 
     # --- Align logits to response portion ---
     teacher_prompt_len = teacher_input_ids.shape[1]
@@ -260,13 +269,15 @@ def do_esdft(
 
     # ESDFT-specific
     screening_threshold = config.esdft_screening_threshold
+    warmup_frac = config.esdft_warmup_frac
 
     if state is None:
         state = {}
 
     logger.info(
         f"---- Begin ESDFT Training "
-        f"(KL: {kl_estimator}, threshold: {screening_threshold}) ----"
+        f"(KL: {kl_estimator}, threshold: {screening_threshold}, "
+        f"warmup: {warmup_frac:.0%}) ----"
     )
     set_seeds(config.seed)
 
@@ -280,6 +291,10 @@ def do_esdft(
     if "ema_state" in state:
         ema_teacher.load_state_dict(state["ema_state"])
     logger.info(f"Initialized EMA teacher (decay={ema_decay})")
+
+    # Enable gradient checkpointing to reduce activation memory
+    raw_model.enable_gradient_checkpointing()
+    logger.info("Enabled gradient checkpointing")
 
     model.train()
 
@@ -335,6 +350,12 @@ def do_esdft(
         "discrepant": 0,
     })
 
+    screening_warmup_steps = int(warmup_frac * total_steps)
+    logger.info(
+        f"  Screening warm-up: {screening_warmup_steps} steps "
+        f"(full SDFT), then screening with threshold={screening_threshold}"
+    )
+
     pbar = tqdm(total=total_steps, **get_tqdm_kwargs(logger, ncols=160))
     num_steps = 0
     resume_step = state.get("step", -1)
@@ -347,54 +368,66 @@ def do_esdft(
                 continue
 
             batch_size = batch["student_input_ids"].shape[0]
+            in_warmup = num_steps <= screening_warmup_steps
+
+            if in_warmup:
+                # ============================================================
+                # Warm-up phase — full SDFT on entire batch, no screening
+                # ============================================================
+                screen_stats["total"] += batch_size
+                screen_stats["generated"] += batch_size
+                n_train = batch_size
+                n_audit_actual = 0
+                sub_batch = batch
+            else:
+                # ============================================================
+                # Phase 1 — Cheap Disagreement Screening
+                # ============================================================
+                disagreement = _compute_disagreement(
+                    model, ema_teacher, batch, config.device
+                )  # (B,)
+
+                high_mask = disagreement > screening_threshold
+                low_mask = ~high_mask
+                n_high = high_mask.sum().item()
+                n_low = low_mask.sum().item()
+
+                # ============================================================
+                # Phase 2 — Audit Selection
+                # ============================================================
+                audit_mask = torch.zeros(batch_size, dtype=torch.bool, device=disagreement.device)
+                if n_low > 0:
+                    low_indices = low_mask.nonzero(as_tuple=True)[0]
+                    n_audit = max(0, int(round(audit_state["fraction"] * n_low)))
+                    if n_audit > 0:
+                        perm = torch.randperm(len(low_indices), device=disagreement.device)[:n_audit]
+                        audit_mask[low_indices[perm]] = True
+
+                n_audit_actual = audit_mask.sum().item()
+
+                # Union: high-disagreement examples + audited easy examples
+                train_mask = high_mask | audit_mask
+                n_train = train_mask.sum().item()
+
+                # Bookkeeping
+                screen_stats["total"] += batch_size
+                screen_stats["generated"] += n_train
+                screen_stats["skipped"] += (batch_size - n_train)
+                screen_stats["audited"] += n_audit_actual
+
+                if n_train == 0:
+                    # Entire batch screened out — no gradient
+                    pbar.set_description(
+                        f"ESDFT | LR: {cur_lr:.2e} | skip: 100% "
+                        f"| audit_p: {audit_state['fraction']:.2f}"
+                    )
+                    continue
+
+                sub_batch = _extract_subbatch(batch, train_mask)
 
             # ============================================================
-            # Phase 1 — Cheap Disagreement Screening
+            # Full SDFT on selected examples
             # ============================================================
-            disagreement = _compute_disagreement(
-                model, ema_teacher, batch, config.device
-            )  # (B,)
-
-            high_mask = disagreement > screening_threshold
-            low_mask = ~high_mask
-            n_high = high_mask.sum().item()
-            n_low = low_mask.sum().item()
-
-            # ============================================================
-            # Phase 2 — Audit Selection
-            # ============================================================
-            audit_mask = torch.zeros(batch_size, dtype=torch.bool, device=disagreement.device)
-            if n_low > 0:
-                low_indices = low_mask.nonzero(as_tuple=True)[0]
-                n_audit = max(0, int(round(audit_state["fraction"] * n_low)))
-                if n_audit > 0:
-                    perm = torch.randperm(len(low_indices), device=disagreement.device)[:n_audit]
-                    audit_mask[low_indices[perm]] = True
-
-            n_audit_actual = audit_mask.sum().item()
-
-            # Union: high-disagreement examples + audited easy examples
-            train_mask = high_mask | audit_mask
-            n_train = train_mask.sum().item()
-
-            # Bookkeeping
-            screen_stats["total"] += batch_size
-            screen_stats["generated"] += n_train
-            screen_stats["skipped"] += (batch_size - n_train)
-            screen_stats["audited"] += n_audit_actual
-
-            if n_train == 0:
-                # Entire batch screened out — no gradient
-                pbar.set_description(
-                    f"ESDFT | LR: {cur_lr:.2e} | skip: 100% "
-                    f"| audit_p: {audit_state['fraction']:.2f}"
-                )
-                continue
-
-            # ============================================================
-            # Phase 3 — Full SDFT on selected examples
-            # ============================================================
-            sub_batch = _extract_subbatch(batch, train_mask)
 
             loss, per_example_kl = _esdft_generation_step(
                 model=model,
@@ -406,9 +439,9 @@ def do_esdft(
             )
 
             # ============================================================
-            # Phase 4 — Discrepancy check on audit samples
+            # Phase 4 — Discrepancy check on audit samples (skip during warmup)
             # ============================================================
-            if n_audit_actual > 0:
+            if n_audit_actual > 0 and not in_warmup:
                 train_indices = train_mask.nonzero(as_tuple=True)[0].tolist()
                 audit_in_sub = [
                     i for i, idx in enumerate(train_indices)
@@ -441,9 +474,10 @@ def do_esdft(
             losses.append(loss_val)
 
             skip_frac = 1.0 - n_train / batch_size
+            phase_tag = "warmup" if in_warmup else f"skip:{skip_frac:.0%}"
             pbar.set_description(
                 f"ESDFT | LR: {cur_lr:.2e} | KL: {loss_val:.4f} "
-                f"| skip: {skip_frac:.0%} | audit_p: {audit_state['fraction']:.2f}"
+                f"| {phase_tag} | audit_p: {audit_state['fraction']:.2f}"
             )
 
             # Periodic logging

@@ -169,11 +169,12 @@ def eval_prior_capabilities(
 
     try:
         import lm_eval
+        from lm_eval.models.huggingface import HFLM
 
         raw_model = get_raw_model(model)
 
         # Create lm-eval model wrapper
-        lm = lm_eval.models.huggingface.HFLM(
+        lm = HFLM(
             pretrained=raw_model.model,
             tokenizer=raw_model.tokenizer,
             batch_size=config.batch_size,

@@ -81,6 +81,10 @@ def do_sdft(
         ema_teacher.load_state_dict(state["ema_state"])
     logger.info(f"Initialized EMA teacher (decay={ema_decay})")
 
+    # Enable gradient checkpointing to reduce activation memory
+    raw_model.enable_gradient_checkpointing()
+    logger.info("Enabled gradient checkpointing")
+
     model.train()
 
     # Optimizer
@@ -227,6 +231,9 @@ def _sdft_step(
             do_sample=True,
         )
 
+    # Free generation KV cache before heavy forward passes
+    torch.cuda.empty_cache()
+
     # Build the full sequence for log-prob computation
     # generated includes prompt + new tokens
     gen_len = generated.shape[1]
@@ -262,6 +269,8 @@ def _sdft_step(
             attention_mask=teacher_full_mask,
         )
     teacher_logits = teacher_outputs.logits
+    del teacher_outputs  # free intermediate memory
+    torch.cuda.empty_cache()
 
     # Align logits to the generated response portion
     teacher_prompt_len = teacher_input_ids.shape[1]

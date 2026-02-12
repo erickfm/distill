@@ -160,6 +160,7 @@ def run_experiments(
         # ESDFT overrides
         for esdft_key in [
             "esdft_screening_threshold",
+            "esdft_warmup_frac",
             "esdft_audit_init",
             "esdft_discrepancy_target",
             "esdft_audit_alpha",
@@ -232,7 +233,8 @@ def run(
     eval_benchmarks: Optional[list[str]] = None,
 
     # ESDFT-specific
-    esdft_screening_threshold: float = 0.5,
+    esdft_screening_threshold: float = 0.01,
+    esdft_warmup_frac: float = 0.1,
     esdft_audit_init: float = 0.3,
     esdft_discrepancy_target: float = 0.05,
     esdft_audit_alpha: float = 0.1,
@@ -276,6 +278,7 @@ def run(
             system_prompt=system_prompt,
             eval_benchmarks=eval_benchmarks,
             esdft_screening_threshold=esdft_screening_threshold,
+            esdft_warmup_frac=esdft_warmup_frac,
             esdft_audit_init=esdft_audit_init,
             esdft_discrepancy_target=esdft_discrepancy_target,
             esdft_audit_alpha=esdft_audit_alpha,

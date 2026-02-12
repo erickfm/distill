@@ -80,7 +80,8 @@ class RunConfig:
     eval_benchmarks: list  # list of benchmark names for prior capability eval
 
     # ESDFT-specific (defaults make these optional for non-ESDFT runs)
-    esdft_screening_threshold: float = 0.5
+    esdft_screening_threshold: float = 0.01
+    esdft_warmup_frac: float = 0.1   # fraction of total steps to do full SDFT before screening
     esdft_audit_init: float = 0.3
     esdft_discrepancy_target: float = 0.05
     esdft_audit_alpha: float = 0.1
@@ -133,6 +134,7 @@ def save_config(
         },
         "esdft": {
             "screening_threshold": run_config.esdft_screening_threshold,
+            "warmup_frac": run_config.esdft_warmup_frac,
             "audit_init": run_config.esdft_audit_init,
             "discrepancy_target": run_config.esdft_discrepancy_target,
             "audit_alpha": run_config.esdft_audit_alpha,
@@ -187,7 +189,8 @@ def setup(
     eval_benchmarks: Optional[list[str]] = None,
 
     # ESDFT-specific
-    esdft_screening_threshold: float = 0.5,
+    esdft_screening_threshold: float = 0.01,
+    esdft_warmup_frac: float = 0.1,
     esdft_audit_init: float = 0.3,
     esdft_discrepancy_target: float = 0.05,
     esdft_audit_alpha: float = 0.1,
@@ -306,6 +309,7 @@ def setup(
         do_compile=do_compile,
         eval_benchmarks=eval_benchmarks,
         esdft_screening_threshold=esdft_screening_threshold,
+        esdft_warmup_frac=esdft_warmup_frac,
         esdft_audit_init=esdft_audit_init,
         esdft_discrepancy_target=esdft_discrepancy_target,
         esdft_audit_alpha=esdft_audit_alpha,

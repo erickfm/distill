@@ -88,7 +88,8 @@ def get_configs(timestamp: str | None = None):
             {"method": "esdft", "do_train": True, "do_eval": True},
         ],
         # ESDFT-specific hyperparameters
-        "esdft_screening_threshold": 0.5,
+        "esdft_screening_threshold": 0.01,
+        "esdft_warmup_frac": 0.1,
         "esdft_audit_init": 0.3,
         "esdft_discrepancy_target": 0.05,
         "esdft_audit_alpha": 0.1,

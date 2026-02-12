@@ -35,7 +35,7 @@ SkillLearningBaseArgs: Dict[str, Any] = {
     # SDFT
     "ema_decay": 0.999,
     "kl_estimator": "analytic",
-    "max_gen_len": 2048,
+    "max_gen_len": 512,  # Science Q&A answers are short; saves ~4x activation memory
 
     # Infrastructure
     "do_compile": False,
@@ -47,14 +47,11 @@ SkillLearningBaseArgs: Dict[str, Any] = {
     "system_prompt": None,
     "do_cleanup_distributed": True,
 
-    # Evaluation
+    # Evaluation — lightweight subset for reasonable runtime
     "eval_benchmarks": [
         "hellaswag",
         "truthfulqa_mc2",
-        "mmlu",
-        "ifeval",
         "winogrande",
-        "humaneval",
     ],
 
     # Stages
